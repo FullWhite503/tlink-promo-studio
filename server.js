@@ -2,7 +2,7 @@
 // 실행: npm install → .env에 ANTHROPIC_API_KEY 입력 → npm start → http://localhost:3000
 import express from "express";
 import Anthropic from "@anthropic-ai/sdk";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { ANALYZE_SCHEMA, ANALYZE_SYSTEM, GENERATE_SCHEMA, GENERATE_SYSTEM } from "./prompts.js";
@@ -18,7 +18,12 @@ const PORT = Number(process.env.PORT || 3000);
 const MODEL = process.env.CLAUDE_MODEL || "claude-opus-5-5";
 const hasKey = () => Boolean(process.env.ANTHROPIC_API_KEY);
 let client = null;
-const getClient = () => (client ??= new Anthropic());
+// 느린 네트워크에서 오래 멈추지 않도록 120초에 끊고, 재시도는 callClaude에서 1회만 한다(SDK 재시도는 끔)
+const getClient = () => (client ??= new Anthropic({ timeout: 120_000, maxRetries: 0 }));
+const isNetworkError = (err) =>
+  err instanceof Anthropic.APIConnectionError ||
+  err instanceof Anthropic.APIConnectionTimeoutError ||
+  /terminated|timeout|ECONNRESET|socket/i.test(String(err?.message || err?.cause?.message || ""));
 
 const app = express();
 app.use(express.json({ limit: "40mb" }));
@@ -33,7 +38,20 @@ app.get("/api/samples", (_req, res) =>
 
 // Claude 호출 공통 함수: 스트리밍 + JSON 스키마 구조화 출력
 let fallbackSupported = true;
-async function callClaude({ system, content, schema, effort, label }) {
+async function callClaude(args, attempt = 1) {
+  try {
+    return await callClaudeOnce(args);
+  } catch (err) {
+    if (attempt < 2 && isNetworkError(err)) {
+      console.warn(`[${args.label}] 네트워크 오류(${err.message}) → 1회 재시도`);
+      return callClaude(args, attempt + 1);
+    }
+    if (isNetworkError(err)) throw new Error("네트워크가 불안정해 AI 응답을 받지 못했습니다. 연결을 확인한 뒤 다시 시도하거나, '저장된 마지막 실제 결과 보기'를 눌러 주세요.");
+    throw err;
+  }
+}
+
+async function callClaudeOnce({ system, content, schema, effort, label }) {
   const started = Date.now();
   const params = {
     model: MODEL,
@@ -56,7 +74,7 @@ async function callClaude({ system, content, schema, effort, label }) {
     if (fallbackSupported && err instanceof Anthropic.BadRequestError && /fallback/i.test(err.message)) {
       fallbackSupported = false;
       console.warn("[fallback] 미지원 → 기본 호출로 재시도");
-      return callClaude({ system, content, schema, effort, label });
+      return callClaudeOnce({ system, content, schema, effort, label });
     }
     throw err;
   }
@@ -169,6 +187,21 @@ app.post("/api/generate", requireKey, async (req, res) => {
   } catch (err) {
     errorResponse(res, err);
   }
+});
+
+// 마지막으로 성공한 실제 생성 결과 저장·재표시 (네트워크 장애 대비, 화면에 "저장된 결과"로 명시)
+const LAST_RUN = path.join(__dirname, "data", "last_run.json");
+app.post("/api/last-run", (req, res) => {
+  try {
+    writeFileSync(LAST_RUN, JSON.stringify(req.body));
+    res.json({ ok: true });
+  } catch (err) {
+    errorResponse(res, err);
+  }
+});
+app.get("/api/last-run", (_req, res) => {
+  if (!existsSync(LAST_RUN)) return res.status(404).json({ error: "저장된 결과가 없습니다." });
+  res.type("application/json").send(readFileSync(LAST_RUN, "utf8"));
 });
 
 app.listen(PORT, () => {

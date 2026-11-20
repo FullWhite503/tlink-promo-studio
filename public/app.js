@@ -37,7 +37,7 @@ async function addPhotos(files) {
   if (document.body.classList.contains("running")) return; // 실행 중에는 사진 번호가 바뀌지 않게 잠금
   for (const f of [...files].filter((f) => f.type.startsWith("image/"))) {
     if (state.photos.length >= 5) break;
-    state.photos.push(await resizeImage(f, 1568));
+    state.photos.push(await resizeImage(f, 1280)); // 느린 네트워크 대비: 업로드 용량·이미지 토큰 축소
   }
   renderThumbs();
   $("#photos").value = "";
@@ -51,7 +51,7 @@ function resizeImage(file, max) {
       c.width = Math.round(img.width * scale);
       c.height = Math.round(img.height * scale);
       c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
-      const url = c.toDataURL("image/jpeg", 0.86);
+      const url = c.toDataURL("image/jpeg", 0.8);
       URL.revokeObjectURL(img.src);
       resolve({ name: file.name, media_type: "image/jpeg", data: url.split(",")[1], url, w: c.width, h: c.height });
     };
@@ -87,6 +87,7 @@ async function run() {
   const btn = $("#run");
   btn.disabled = true;
   document.body.classList.add("running");
+  $("#replayBanner").classList.add("hidden");
   $("#error").classList.add("hidden");
   $("#progress").classList.remove("hidden");
   $$("#progress li").forEach((li) => (li.className = "", (li.querySelector("em").textContent = "")));
@@ -121,11 +122,9 @@ async function run() {
       state.check = runChecks(state.analysis.guideline, state.content);
       return { meta: { seconds: 0 } };
     });
-    renderBlog();
-    await renderCards();
-    renderCheck();
-    renderSummary();
+    await renderResults();
     showTab("blog");
+    saveLastRun(); // 네트워크 장애 대비: 이번 실제 결과를 저장
   } catch (err) {
     $("#error").textContent = err.message;
     $("#error").classList.remove("hidden");
@@ -134,6 +133,56 @@ async function run() {
     document.body.classList.remove("running");
   }
 }
+async function renderResults() {
+  renderDiff();
+  renderPhotos();
+  renderBlog();
+  await renderCards();
+  renderCheck();
+  renderSummary();
+  $("#empty").classList.add("hidden");
+}
+
+// ---------- 저장된 마지막 실제 결과 (네트워크 장애 대비) ----------
+async function saveLastRun() {
+  try {
+    await fetch("/api/last-run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        savedAt: new Date().toISOString(),
+        timings: state.timings,
+        retried: state.retried,
+        analysis: state.analysis,
+        content: state.content,
+        photos: state.photos.map(({ name, url }) => ({ name, url })),
+      }),
+    });
+    $("#replay").classList.remove("hidden");
+  } catch {}
+}
+async function checkLastRun() {
+  const r = await fetch("/api/last-run").catch(() => null);
+  if (r?.ok) $("#replay").classList.remove("hidden");
+}
+checkLastRun();
+$("#replay").addEventListener("click", async () => {
+  const r = await fetch("/api/last-run");
+  if (!r.ok) return;
+  const s = await r.json();
+  Object.assign(state, { analysis: s.analysis, content: s.content, timings: s.timings || {}, retried: s.retried, photos: s.photos || [] });
+  renderThumbs();
+  state.check = runChecks(state.analysis.guideline, state.content);
+  await renderResults();
+  const t = new Date(s.savedAt);
+  const hhmm = `${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}`;
+  const sec = ((s.timings?.analyze || 0) + (s.timings?.generate || 0)).toFixed(0);
+  $("#replayBanner").textContent = `저장된 실제 생성 결과를 다시 보여 주는 중입니다 · ${hhmm}에 생성 · AI 생성 ${sec}초 (네트워크 장애 대비 재표시)`;
+  $("#replayBanner").classList.remove("hidden");
+  $("#error").classList.add("hidden");
+  showTab("blog");
+});
+
 async function step(name, fn) {
   const li = $(`#progress li[data-step="${name}"]`);
   li.className = "active";

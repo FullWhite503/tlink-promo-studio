@@ -3,3 +3,4 @@ node_modules/
 .claude/
 *.log
 public/_demo/
+data/last_run.json
