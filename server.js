@@ -75,6 +75,23 @@ async function callClaude({ system, content, schema, effort, label }) {
   }
 }
 
+// 생성 결과에서 비어 있는 필수 필드를 찾는다.
+function findMissing(d, analysis) {
+  const m = [];
+  const b = d?.blog || {};
+  if (!b.title?.trim()) m.push("title");
+  if (!b.intro?.trim()) m.push("intro");
+  if (!b.sections?.length || b.sections.some((s) => !s.body?.trim())) m.push("sections");
+  if (!b.conclusion?.trim()) m.push("conclusion");
+  if (!b.footer?.trim()) m.push("footer");
+  if (!b.tags?.length) m.push("tags");
+  if ((d?.cardnews || []).filter((c) => c.headline?.trim() && c.body?.trim()).length < 4) m.push("cardnews");
+  if (!d?.instagram_caption?.trim()) m.push("instagram_caption");
+  const missionCount = analysis?.guideline?.missions?.length || 1;
+  if ((d?.mission_check || []).length < missionCount) m.push("mission_check");
+  return m;
+}
+
 function errorResponse(res, err) {
   console.error(err);
   let message = err.message || "알 수 없는 오류";
@@ -133,13 +150,20 @@ app.post("/api/generate", requireKey, async (req, res) => {
         text: `[분석 결과]\n${JSON.stringify(analysis, null, 1)}\n\n[제품 자료]\n${product}\n\n[홍보 가이드라인]\n${guideline}\n\n위 내용으로 블로그 리뷰, 카드뉴스 4장, 인스타그램 캡션, 미션 검수, 경고를 작성해 줘.`,
       },
     ];
-    const result = await callClaude({
-      system: GENERATE_SYSTEM,
-      content,
-      schema: GENERATE_SCHEMA,
-      effort: process.env.GENERATE_EFFORT || "low",
-      label: "generate",
-    });
+    const run = (effort, label) =>
+      callClaude({ system: GENERATE_SYSTEM, content, schema: GENERATE_SCHEMA, effort, label });
+    let result = await run(process.env.GENERATE_EFFORT || "low", "generate");
+    const missing = findMissing(result.data, analysis);
+    if (missing.length) {
+      // 낮은 effort에서 뒤쪽 필드를 비워 두는 경우가 있어, 빈칸이 있으면 한 단계 높여 한 번 더 생성한다.
+      console.warn(`[generate] 빈 필드 ${missing.join(", ")} → medium으로 재생성`);
+      const retry = await run("medium", "generate-retry");
+      const retryMissing = findMissing(retry.data, analysis);
+      retry.meta.seconds = Number((result.meta.seconds + retry.meta.seconds).toFixed(1));
+      retry.meta.retried = true;
+      if (retryMissing.length <= missing.length) result = retry;
+      result.meta.missing = findMissing(result.data, analysis);
+    }
     res.json(result);
   } catch (err) {
     errorResponse(res, err);

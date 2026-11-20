@@ -34,6 +34,7 @@ $("#photos").addEventListener("change", (e) => addPhotos(e.target.files));
 drop.addEventListener("drop", (e) => (e.preventDefault(), addPhotos(e.dataTransfer.files)));
 
 async function addPhotos(files) {
+  if (document.body.classList.contains("running")) return; // 실행 중에는 사진 번호가 바뀌지 않게 잠금
   for (const f of [...files].filter((f) => f.type.startsWith("image/"))) {
     if (state.photos.length >= 5) break;
     state.photos.push(await resizeImage(f, 1568));
@@ -85,6 +86,7 @@ $("#run").addEventListener("click", run);
 async function run() {
   const btn = $("#run");
   btn.disabled = true;
+  document.body.classList.add("running");
   $("#error").classList.add("hidden");
   $("#progress").classList.remove("hidden");
   $$("#progress li").forEach((li) => (li.className = "", (li.querySelector("em").textContent = "")));
@@ -109,6 +111,10 @@ async function run() {
     const g = await step("generate", () => api("/api/generate", { analysis: state.analysis, product, guideline }));
     state.content = g.data;
     state.timings.generate = g.meta.seconds;
+    if (g.meta.missing?.length) {
+      $("#error").textContent = `일부 항목이 비어 있습니다(${g.meta.missing.join(", ")}). 다시 생성하면 채워질 수 있습니다.`;
+      $("#error").classList.remove("hidden");
+    }
 
     await step("check", async () => {
       state.check = runChecks(state.analysis.guideline, state.content);
@@ -124,6 +130,7 @@ async function run() {
     $("#error").classList.remove("hidden");
   } finally {
     btn.disabled = false;
+    document.body.classList.remove("running");
   }
 }
 async function step(name, fn) {
@@ -214,6 +221,7 @@ function renderPhotos() {
           <h4>사진${p.index} · ${esc(p.screen_type)}</h4>
           <div class="row"><label>보이는 것</label>${esc(p.what_is_visible)}</div>
           <div class="row"><label>증명</label>${p.proves.map((t) => `<span class="badge">${esc(t)}</span>`).join(" ") || "-"}</div>
+          <div class="row"><label>미션 증거</label>${(p.missions || []).map((n) => `<span class="badge">미션 ${n}</span>`).join(" ") || '<span class="badge warn">해당 미션 화면 아님</span>'}</div>
           <div class="row"><label>배치</label>블로그 ${p.blog_section}단락${structure[p.blog_section - 1] ? ` · ${esc(structure[p.blog_section - 1])}` : ""}</div>
           <div class="row"><label>캡션</label>${esc(p.caption)}</div>
           <div class="row"><label>대체텍스트</label>${esc(p.alt_text)}</div>
@@ -227,7 +235,7 @@ function renderPhotos() {
 // ---------- ③ 블로그 ----------
 function blogPlainText() {
   const b = state.content.blog;
-  const parts = [b.title, "", stripEv(b.intro), ""];
+  const parts = [b.title, "", ...(b.disclosure ? [b.disclosure, ""] : []), stripEv(b.intro), ""];
   b.sections.forEach((s) => {
     parts.push(`■ ${s.heading}`);
     s.photo_indexes.forEach((i) => parts.push(`[사진${i}: ${state.analysis.photos.find((p) => p.index === i)?.caption || ""}]`));
@@ -250,6 +258,7 @@ function renderBlog() {
     </div>
     <article class="blog" id="blogView">
       <h2>${decorate(b.title)}</h2>
+      ${b.disclosure ? `<p class="disclosure">${esc(b.disclosure)}</p>` : ""}
       <p>${decorate(b.intro)}</p>
       ${b.sections.map((s) => `<h3>${decorate(s.heading)}</h3>${s.photo_indexes.map(fig).join("")}<p>${decorate(s.body)}</p>`).join("")}
       <p><b>${decorate(b.conclusion)}</b></p>
@@ -320,7 +329,11 @@ async function drawCard(canvas, card, i, total) {
     ctx.fillRect(0, 0, W, H);
   }
   // 상단 브랜드 · 페이지 (알약 폭은 텍스트 폭 + 좌우 패딩 24px)
-  const BRAND = "T·LINK 비즈레코딩";
+  // 브랜드·연락처는 분석 결과(제품명)와 가이드라인 하단 정보에서 가져온다 → 다른 제품에도 그대로 적용
+  const BRAND = (state.analysis?.product_name || "PRODUCT").slice(0, 18);
+  const footerText = (state.analysis?.guideline?.footer_items || []).join(" ");
+  const site = (footerText.match(/www\.[\w.-]+\.[a-z]{2,}/i) || [""])[0];
+  const phone = (footerText.match(/\d{2,4}-\d{3,4}-\d{4}|\d{4}-\d{4}/) || [""])[0];
   ctx.font = `700 30px ${FONT}`;
   const pillW = Math.ceil(ctx.measureText(BRAND).width) + 48;
   ctx.fillStyle = "#1f5eff";
@@ -351,7 +364,7 @@ async function drawCard(canvas, card, i, total) {
   // 하단 정보
   ctx.font = `500 26px ${FONT}`;
   ctx.fillStyle = "rgba(255,255,255,0.7)";
-  ctx.fillText(i === total - 1 ? "상담 1877-3836 · www.tlinkcrm.com" : "www.tlinkcrm.com", 70, H - 56);
+  ctx.fillText(i === total - 1 && phone ? `상담 ${phone}${site ? " · " + site : ""}` : site, 70, H - 56);
 }
 function roundRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
@@ -389,31 +402,55 @@ function runChecks(gl, c) {
   const body = [b.intro, ...b.sections.map((s) => s.heading + " " + s.body), b.conclusion].join("\n");
   const all = [title, body, b.footer].join("\n");
   const blogTags = b.tags.map((t) => norm(t.replace(/^#/, "")));
+  // 가이드라인 조건 = 필수 키워드 + 서브 키워드 + 태그 + 추천 구성 + 하단 정보(코드 검사) + 미션(AI 판정)
+  // 묶음 행은 count(조건 수)와 passed(충족 수)를 따로 가져 조건 하나하나를 점수에 반영한다.
   const rules = [];
-  const add = (group, item, pass, detail = "") => rules.push({ group, item, pass, detail });
+  const add = (group, item, passed, count, detail = "") => rules.push({ group, item, passed, count, pass: passed === count, detail });
 
   (gl.required_keywords || []).forEach((k) => {
-    add("필수 키워드", `"${k}" 제목 포함`, has(title, k));
-    add("필수 키워드", `"${k}" 본문 포함`, has(body, k));
+    const t = has(title, k), bd = has(body, k);
+    add("필수 키워드", `"${k}" 제목·본문 모두 포함`, t && bd ? 1 : 0, 1, `제목 ${t ? "✓" : "✗"} · 본문 ${bd ? "✓" : "✗"}`);
   });
-  (gl.title_keywords || []).forEach((k) => add("제목·첫 문단 키워드", `"${k}"`, has(title + intro, k)));
-  const subHit = (gl.sub_keywords || []).filter((k) => has(all, k));
-  const subMiss = (gl.sub_keywords || []).filter((k) => !has(all, k));
-  add("서브 키워드", `${subHit.length} / ${(gl.sub_keywords || []).length}개 사용`, subMiss.length === 0, { hit: subHit, miss: subMiss });
-  const tagHit = (gl.tags || []).filter((t) => blogTags.includes(norm(t.replace(/^#/, ""))));
-  const tagMiss = (gl.tags || []).filter((t) => !blogTags.includes(norm(t.replace(/^#/, ""))));
-  add("태그", `${tagHit.length} / ${(gl.tags || []).length}개 포함`, tagMiss.length === 0, { hit: tagHit, miss: tagMiss });
-  (gl.footer_items || []).forEach((f) => add("하단 정보", f, has(b.footer + all, f)));
-  add("추천 본문 구성", `단락 ${b.sections.length}개 / 권장 ${(gl.structure || []).length}개`, b.sections.length >= (gl.structure || []).length);
+  const subs = gl.sub_keywords || [];
+  const subHit = subs.filter((k) => has(all, k));
+  add("서브 키워드", `${subHit.length} / ${subs.length}개 사용`, subHit.length, subs.length, { hit: subHit, miss: subs.filter((k) => !has(all, k)) });
+  const tagsGl = gl.tags || [];
+  const inTags = (t) => blogTags.includes(norm(t.replace(/^#/, "")));
+  const tagHit = tagsGl.filter(inTags);
+  add("태그", `${tagHit.length} / ${tagsGl.length}개 포함`, tagHit.length, tagsGl.length, { hit: tagHit, miss: tagsGl.filter((t) => !inTags(t)) });
+  (gl.structure || []).forEach((s, i) =>
+    add("추천 본문 구성", `${i + 1}단락: ${s}`, b.sections[i] ? 1 : 0, 1, b.sections[i] ? `생성된 단락: ${b.sections[i].heading} (내용 일치는 담당자 확인)` : "단락 없음")
+  );
+  (gl.footer_items || []).forEach((f) => add("하단 정보", f, has(b.footer + all, f) ? 1 : 0, 1));
+
+  // 미션 응답이 일부 빠져도 분모가 줄지 않도록 가이드라인의 미션 수를 기준으로 한다
+  const missions = [...(c.mission_check || [])];
+  for (let i = missions.length; i < (gl.missions || []).length; i++) missions.push({ mission: gl.missions[i], met: false, quote: "AI 판정 누락 → 담당자 확인 필요" });
+  const ruleCount = rules.reduce((n, r) => n + r.count, 0);
+  const rulePassed = rules.reduce((n, r) => n + r.passed, 0);
+  const missionScore = missions.filter((m) => m.met).length;
+  const total = ruleCount + missions.length;
+
+  // 추가 점검 (점수 미반영): 제목·첫 문단 키워드, 사진 배치, 협찬 표시, 최상급·단정 표현 스캔
+  const extras = [];
+  (gl.title_keywords || []).forEach((k) => {
+    const t = has(title, k), f = has(intro, k);
+    extras.push({ item: `제목과 첫 문단에 "${k}"`, pass: t && f, detail: `제목 ${t ? "✓" : "✗"} · 첫 문단 ${f ? "✓" : "✗"}` });
+  });
   if (state.photos.length) {
     const used = new Set(b.sections.flatMap((s) => s.photo_indexes));
-    add("현장사진 배치", `${used.size} / ${state.photos.length}장 본문 배치`, used.size >= state.photos.length);
+    extras.push({ item: `현장사진 본문 배치 ${used.size} / ${state.photos.length}장`, pass: used.size >= state.photos.length });
   }
-  const missions = c.mission_check || [];
-  const ruleScore = rules.filter((r) => r.pass).length;
-  const missionScore = missions.filter((m) => m.met).length;
-  const total = rules.length + missions.length;
-  return { rules, missions, warnings: c.warnings || [], score: total ? Math.round(((ruleScore + missionScore) / total) * 100) : 0, ruleScore, missionScore, total };
+  extras.push({ item: "협찬(경제적 이해관계) 표시 문구", pass: Boolean(b.disclosure && b.disclosure.trim()) });
+  const plain = stripEv(all);
+  const superlatives = [...new Set(plain.match(/(국내|업계|세계)\s?(최고|최초|1위|유일)|최고의?|1위|유일한?|완벽(한|하게)?|100\s?%|무조건|반드시\s?(성공|해결)/g) || [])];
+  extras.push({ item: "최상급·단정 표현 (코드 스캔)", pass: superlatives.length === 0, detail: superlatives.length ? `발견: ${superlatives.join(", ")} → 자료 근거 확인 필요` : "발견 없음" });
+
+  return {
+    rules, missions, extras, warnings: c.warnings || [],
+    score: total ? Math.round(((rulePassed + missionScore) / total) * 100) : 0,
+    ruleScore: rulePassed, ruleCount, missionScore, total, passed: rulePassed + missionScore,
+  };
 }
 function renderCheck() {
   const ck = state.check;
@@ -422,8 +459,8 @@ function renderCheck() {
       ? `<div class="chips">${d.hit.map((k) => `<span class="chip">${esc(k)}</span>`).join("")}${d.miss.map((k) => `<span class="chip miss">${esc(k)}</span>`).join("")}</div>`
       : esc(d);
   $("#tab-check").innerHTML = `
-    <p class="hint">규칙 검수는 코드가 정확히 세고(키워드·태그·하단 정보), 미션 충족은 AI가 본문 인용과 함께 판정합니다.</p>
-    <h3 class="sub">규칙 검수 · ${ck.ruleScore} / ${ck.rules.length} 통과</h3>
+    <p class="hint">가이드라인 조건 ${ck.total}개 = 코드 검사 ${ck.ruleCount}개(키워드·태그·구성·하단 정보, AI가 가이드라인에서 뽑은 목록을 코드가 하나씩 대조) + 미션 ${ck.missions.length}개(AI가 본문 인용과 함께 판정). 최종 승인은 담당자가 합니다.</p>
+    <h3 class="sub">규칙 검수 (코드) · ${ck.ruleScore} / ${ck.ruleCount} 조건 충족</h3>
     <table class="check-table rules"><tr><th class="c-group">구분</th><th class="c-item">항목</th><th class="c-result">결과</th><th>상세</th></tr>
       ${ck.rules.map((r) => `<tr><td class="c-group">${esc(r.group)}</td><td class="c-item">${esc(r.item)}</td><td class="c-result ${r.pass ? "ok" : "no"}">${r.pass ? "통과" : "보완 필요"}</td><td>${detail(r.detail)}</td></tr>`).join("")}
     </table>
@@ -431,14 +468,18 @@ function renderCheck() {
     <table class="check-table missions"><tr><th class="c-num">#</th><th class="c-mission">미션</th><th class="c-result">결과</th><th>근거 인용</th></tr>
       ${ck.missions.map((m, i) => `<tr class="${m.met ? "" : "miss-row"}"><td class="c-num">${i + 1}</td><td class="c-mission">${esc(m.mission)}</td><td class="c-result ${m.met ? "ok" : "no"}">${m.met ? "충족" : "미충족"}</td><td class="quote">${esc(m.quote)}</td></tr>`).join("")}
     </table>
-    <h3 class="sub">확인 필요 경고 · ${ck.warnings.length}건</h3>
+    <h3 class="sub">추가 점검 (점수 미반영)</h3>
+    <table class="check-table rules"><tr><th class="c-item">항목</th><th class="c-result">결과</th><th>상세</th></tr>
+      ${ck.extras.map((x) => `<tr><td class="c-item">${esc(x.item)}</td><td class="c-result ${x.pass ? "ok" : "no"}">${x.pass ? "통과" : "확인 필요"}</td><td>${esc(x.detail || "")}</td></tr>`).join("")}
+    </table>
+    <h3 class="sub">확인 필요 경고 (AI) · ${ck.warnings.length}건</h3>
     ${ck.warnings.length ? `<table><tr><th>문장</th><th>이유</th></tr>${ck.warnings.map((w) => `<tr><td>${esc(w.text)}</td><td>${esc(w.reason)}</td></tr>`).join("")}</table>` : `<p class="hint">근거 없는 수치·최상급 표현이 발견되지 않았습니다.</p>`}`;
 }
 function renderSummary() {
   const ck = state.check;
   const t = (state.timings.analyze || 0) + (state.timings.generate || 0);
   $("#summary").innerHTML = `
-    <div class="stat big"><b>${ck.score}%</b><span>가이드라인 충족률 (${ck.ruleScore + ck.missionScore}/${ck.total} 항목)</span><small>규칙 ${ck.ruleScore}/${ck.rules.length} · AI 미션 ${ck.missionScore}/${ck.missions.length}</small></div>
+    <div class="stat big"><b>${ck.score}%</b><span>가이드라인 ${ck.total}개 조건 중 ${ck.passed}개 충족</span><small>코드 검사 ${ck.ruleScore}/${ck.ruleCount} · AI 미션 ${ck.missionScore}/${ck.missions.length}</small></div>
     <div class="stat"><b>${state.analysis.differentiators.length}</b><span>차별점 카드</span></div>
     <div class="stat"><b>${state.analysis.photos.length}장</b><span>사진 분석·배치</span></div>
     <div class="stat"><b>${ck.warnings.length}건</b><span>확인 필요 경고</span></div>
