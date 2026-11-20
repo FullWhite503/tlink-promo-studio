@@ -1,0 +1,16 @@
+{
+  "name": "tlink-promo-studio",
+  "version": "1.0.0",
+  "description": "티링크 프로모 스튜디오: 현장사진과 제품자료로 만드는 가이드라인 맞춤 홍보 콘텐츠 자동 생성기",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.11.0",
+    "express": "^5.3.0"
+  }
+}

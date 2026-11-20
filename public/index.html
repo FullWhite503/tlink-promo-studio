@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>티링크 프로모 스튜디오</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <div class="logo">T·LINK</div>
+      <div>
+        <h1>티링크 프로모 스튜디오</h1>
+        <p>제품 자료 + 홍보 가이드라인 + 현장사진 → 근거 있는 홍보 콘텐츠와 자동 검수</p>
+      </div>
+    </div>
+    <div id="keyStatus" class="pill">API 상태 확인 중…</div>
+  </header>
+
+  <main class="layout">
+    <!-- 입력 -->
+    <section class="panel inputs">
+      <div class="step">
+        <div class="step-head"><span class="num">1</span><h2>제품 자료</h2><button class="link" data-reset="product">티링크 기본값</button></div>
+        <textarea id="product" rows="9" placeholder="제품 소개서·제안서 내용을 붙여 넣으세요"></textarea>
+        <label class="file-inline">PDF 첨부 (선택) <input type="file" id="pdf" accept="application/pdf" /></label>
+        <div id="pdfName" class="hint"></div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><span class="num">2</span><h2>홍보 가이드라인</h2><button class="link" data-reset="guideline">티링크 11월 가이드라인</button></div>
+        <textarea id="guideline" rows="7" placeholder="필수 키워드, 미션, 추천 구성 등 배포용 가이드라인"></textarea>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><span class="num">3</span><h2>현장사진 · 화면 캡처 <small>최대 5장</small></h2></div>
+        <label id="drop" class="drop">
+          <input type="file" id="photos" accept="image/*" multiple />
+          <span>사진을 끌어다 놓거나 눌러서 선택</span>
+          <small>휴대폰 통화 화면, 녹취 목록, AI 통화요약, 통계, 리포트 화면 등</small>
+        </label>
+        <div id="thumbs" class="thumbs"></div>
+      </div>
+
+      <button id="run" class="run">AI 분석 · 콘텐츠 생성</button>
+      <ol id="progress" class="progress hidden">
+        <li data-step="analyze"><span class="dot"></span>차별점 · 현장사진 분석<em></em></li>
+        <li data-step="generate"><span class="dot"></span>가이드라인 맞춤 콘텐츠 생성<em></em></li>
+        <li data-step="check"><span class="dot"></span>자동 검수<em></em></li>
+      </ol>
+      <div id="error" class="error hidden"></div>
+    </section>
+
+    <!-- 결과 -->
+    <section class="panel results">
+      <div id="summary" class="summary hidden"></div>
+      <nav class="tabs">
+        <button class="tab active" data-tab="diff">① 차별점 카드</button>
+        <button class="tab" data-tab="photo">② 사진 분석·배치</button>
+        <button class="tab" data-tab="blog">③ 블로그 리뷰</button>
+        <button class="tab" data-tab="cards">④ 카드뉴스</button>
+        <button class="tab" data-tab="check">⑤ 가이드라인 검수표</button>
+      </nav>
+      <div id="empty" class="empty">
+        <h3>세 가지만 넣으면 됩니다</h3>
+        <div class="flow">
+          <div><b>제품 자료</b><span>기술 특징 → 고객 이익 → 근거</span></div>
+          <i>→</i>
+          <div><b>현장사진</b><span>무엇을 증명하는지, 어디에 넣을지</span></div>
+          <i>→</i>
+          <div><b>가이드라인</b><span>필수 키워드·미션 자동 검수</span></div>
+        </div>
+        <p>왼쪽은 티링크 비즈레코딩 자료와 11월 가이드라인으로 미리 채워져 있습니다. 현장사진을 올리고 시작 버튼을 누르세요.</p>
+      </div>
+      <div class="tab-body" id="tab-diff"></div>
+      <div class="tab-body hidden" id="tab-photo"></div>
+      <div class="tab-body hidden" id="tab-blog"></div>
+      <div class="tab-body hidden" id="tab-cards"></div>
+      <div class="tab-body hidden" id="tab-check"></div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
