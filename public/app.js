@@ -194,6 +194,11 @@ function renderDiff() {
 }
 
 // ---------- ② 사진 ----------
+// "없음", "해당 없음", "-" 같은 값은 개인정보 주의 사항이 없는 것으로 본다
+const hasPrivacy = (note) => {
+  const s = String(note || "").trim().replace(/[.\s]/g, "");
+  return !!s && !/^(없음|해당없음|-|none|n\/a)$/i.test(s);
+};
 function renderPhotos() {
   const ps = state.analysis.photos;
   const structure = state.analysis.guideline.structure || [];
@@ -201,7 +206,10 @@ function renderPhotos() {
     ? ps
         .map(
           (p) => `<div class="photo-row">
-        ${photoUrl(p.index) ? `<img src="${photoUrl(p.index)}" alt="${esc(p.alt_text)}">` : "<div></div>"}
+        <div class="photo-thumb">
+          ${photoUrl(p.index) ? `<img src="${photoUrl(p.index)}" alt="${esc(p.alt_text)}">` : ""}
+          ${hasPrivacy(p.privacy_note) ? `<span class="privacy-badge">개인정보 주의</span>` : ""}
+        </div>
         <div>
           <h4>사진${p.index} · ${esc(p.screen_type)}</h4>
           <div class="row"><label>보이는 것</label>${esc(p.what_is_visible)}</div>
@@ -209,7 +217,7 @@ function renderPhotos() {
           <div class="row"><label>배치</label>블로그 ${p.blog_section}단락${structure[p.blog_section - 1] ? ` · ${esc(structure[p.blog_section - 1])}` : ""}</div>
           <div class="row"><label>캡션</label>${esc(p.caption)}</div>
           <div class="row"><label>대체텍스트</label>${esc(p.alt_text)}</div>
-          ${p.privacy_note ? `<div class="privacy">⚠ ${esc(p.privacy_note)}</div>` : ""}
+          ${hasPrivacy(p.privacy_note) ? `<div class="privacy">⚠ ${esc(p.privacy_note)}</div>` : ""}
         </div></div>`
         )
         .join("")
@@ -311,14 +319,16 @@ async function drawCard(canvas, card, i, total) {
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, W, H);
   }
-  // 상단 브랜드 · 페이지
+  // 상단 브랜드 · 페이지 (알약 폭은 텍스트 폭 + 좌우 패딩 24px)
+  const BRAND = "T·LINK 비즈레코딩";
+  ctx.font = `700 30px ${FONT}`;
+  const pillW = Math.ceil(ctx.measureText(BRAND).width) + 48;
   ctx.fillStyle = "#1f5eff";
-  roundRect(ctx, 60, 60, 300, 64, 32);
+  roundRect(ctx, 60, 60, pillW, 64, 32);
   ctx.fill();
   ctx.fillStyle = "#fff";
-  ctx.font = `700 30px ${FONT}`;
   ctx.textBaseline = "middle";
-  ctx.fillText("T·LINK 비즈레코딩", 84, 93);
+  ctx.fillText(BRAND, 84, 93);
   ctx.textAlign = "right";
   ctx.font = `600 30px ${FONT}`;
   ctx.fillText(`${i + 1} / ${total}`, W - 60, 93);
@@ -414,12 +424,12 @@ function renderCheck() {
   $("#tab-check").innerHTML = `
     <p class="hint">규칙 검수는 코드가 정확히 세고(키워드·태그·하단 정보), 미션 충족은 AI가 본문 인용과 함께 판정합니다.</p>
     <h3 class="sub">규칙 검수 · ${ck.ruleScore} / ${ck.rules.length} 통과</h3>
-    <table><tr><th>구분</th><th>항목</th><th>결과</th><th>상세</th></tr>
-      ${ck.rules.map((r) => `<tr><td>${esc(r.group)}</td><td>${esc(r.item)}</td><td class="${r.pass ? "ok" : "no"}">${r.pass ? "통과" : "보완 필요"}</td><td>${detail(r.detail)}</td></tr>`).join("")}
+    <table class="check-table rules"><tr><th class="c-group">구분</th><th class="c-item">항목</th><th class="c-result">결과</th><th>상세</th></tr>
+      ${ck.rules.map((r) => `<tr><td class="c-group">${esc(r.group)}</td><td class="c-item">${esc(r.item)}</td><td class="c-result ${r.pass ? "ok" : "no"}">${r.pass ? "통과" : "보완 필요"}</td><td>${detail(r.detail)}</td></tr>`).join("")}
     </table>
     <h3 class="sub">미션 충족 (AI 판정) · ${ck.missionScore} / ${ck.missions.length}</h3>
-    <table><tr><th>#</th><th>미션</th><th>결과</th><th>근거 인용</th></tr>
-      ${ck.missions.map((m, i) => `<tr><td>${i + 1}</td><td>${esc(m.mission)}</td><td class="${m.met ? "ok" : "no"}">${m.met ? "충족" : "미충족"}</td><td class="quote">${esc(m.quote)}</td></tr>`).join("")}
+    <table class="check-table missions"><tr><th class="c-num">#</th><th class="c-mission">미션</th><th class="c-result">결과</th><th>근거 인용</th></tr>
+      ${ck.missions.map((m, i) => `<tr class="${m.met ? "" : "miss-row"}"><td class="c-num">${i + 1}</td><td class="c-mission">${esc(m.mission)}</td><td class="c-result ${m.met ? "ok" : "no"}">${m.met ? "충족" : "미충족"}</td><td class="quote">${esc(m.quote)}</td></tr>`).join("")}
     </table>
     <h3 class="sub">확인 필요 경고 · ${ck.warnings.length}건</h3>
     ${ck.warnings.length ? `<table><tr><th>문장</th><th>이유</th></tr>${ck.warnings.map((w) => `<tr><td>${esc(w.text)}</td><td>${esc(w.reason)}</td></tr>`).join("")}</table>` : `<p class="hint">근거 없는 수치·최상급 표현이 발견되지 않았습니다.</p>`}`;
@@ -428,7 +438,7 @@ function renderSummary() {
   const ck = state.check;
   const t = (state.timings.analyze || 0) + (state.timings.generate || 0);
   $("#summary").innerHTML = `
-    <div class="stat big"><b>${ck.score}%</b><span>가이드라인 충족률 (${ck.ruleScore + ck.missionScore}/${ck.total} 항목)</span></div>
+    <div class="stat big"><b>${ck.score}%</b><span>가이드라인 충족률 (${ck.ruleScore + ck.missionScore}/${ck.total} 항목)</span><small>규칙 ${ck.ruleScore}/${ck.rules.length} · AI 미션 ${ck.missionScore}/${ck.missions.length}</small></div>
     <div class="stat"><b>${state.analysis.differentiators.length}</b><span>차별점 카드</span></div>
     <div class="stat"><b>${state.analysis.photos.length}장</b><span>사진 분석·배치</span></div>
     <div class="stat"><b>${ck.warnings.length}건</b><span>확인 필요 경고</span></div>

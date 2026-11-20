@@ -137,7 +137,7 @@ app.post("/api/generate", requireKey, async (req, res) => {
       system: GENERATE_SYSTEM,
       content,
       schema: GENERATE_SCHEMA,
-      effort: process.env.GENERATE_EFFORT || "medium",
+      effort: process.env.GENERATE_EFFORT || "low",
       label: "generate",
     });
     res.json(result);
