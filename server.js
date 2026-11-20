@@ -80,6 +80,7 @@ function findMissing(d, analysis) {
   const m = [];
   const b = d?.blog || {};
   if (!b.title?.trim()) m.push("title");
+  if (!b.disclosure?.trim()) m.push("disclosure");
   if (!b.intro?.trim()) m.push("intro");
   if (!b.sections?.length || b.sections.some((s) => !s.body?.trim())) m.push("sections");
   if (!b.conclusion?.trim()) m.push("conclusion");
@@ -88,7 +89,7 @@ function findMissing(d, analysis) {
   if ((d?.cardnews || []).filter((c) => c.headline?.trim() && c.body?.trim()).length < 4) m.push("cardnews");
   if (!d?.instagram_caption?.trim()) m.push("instagram_caption");
   const missionCount = analysis?.guideline?.missions?.length || 1;
-  if ((d?.mission_check || []).length < missionCount) m.push("mission_check");
+  if ((d?.mission_check || []).length < missionCount || (d?.mission_check || []).some((x) => !x.quote?.trim())) m.push("mission_check");
   return m;
 }
 

@@ -111,6 +111,7 @@ async function run() {
     const g = await step("generate", () => api("/api/generate", { analysis: state.analysis, product, guideline }));
     state.content = g.data;
     state.timings.generate = g.meta.seconds;
+    state.retried = Boolean(g.meta.retried);
     if (g.meta.missing?.length) {
       $("#error").textContent = `일부 항목이 비어 있습니다(${g.meta.missing.join(", ")}). 다시 생성하면 채워질 수 있습니다.`;
       $("#error").classList.remove("hidden");
@@ -395,7 +396,35 @@ function wrap(ctx, text, maxW) {
 }
 
 // ---------- ⑤ 자동 검수 (규칙 기반 + AI 판정) ----------
-function runChecks(gl, c) {
+// 가이드라인 원문에서 "필수:", "서브:", "태그:" 줄을 코드가 직접 읽는다 → AI가 뽑은 목록에 빠진 항목을 보충
+function parseGuidelineText(text = "") {
+  const grab = (label) => (text.match(new RegExp(`^\\s*${label}\\s*[:：]\\s*(.+)$`, "m")) || [, ""])[1];
+  const list = (s) => s.split(/[,，]/).map((x) => x.trim()).filter(Boolean);
+  const tags = (grab("태그").match(/#[^#]+/g) || []).map((t) => t.replace(/^#/, "").trim()).filter(Boolean);
+  return { required_keywords: list(grab("필수")), sub_keywords: list(grab("서브")), tags };
+}
+function mergeLists(ai = [], parsed = []) {
+  const out = [...ai];
+  const seen = new Set(ai.map((x) => norm(String(x).replace(/^#/, ""))));
+  const added = [];
+  parsed.forEach((p) => {
+    if (!seen.has(norm(p))) (seen.add(norm(p)), out.push(p), added.push(p));
+  });
+  return { list: out, added };
+}
+// 하단 정보 항목에서 URL·전화번호를 뽑아 하단 영역에 모두 있는지 본다 (없으면 문구 전체로 비교)
+function footerItemPass(item, footer) {
+  const tokens = String(item).match(/(https?:\/\/)?(www\.)?[\w-]+(\.[\w-]+)+(\/[\w./-]*)?|\d{2,4}-\d{3,4}(-\d{4})?/g) || [];
+  return tokens.length ? tokens.every((t) => has(footer, t.replace(/^https?:\/\//, ""))) : has(footer, item);
+}
+function runChecks(gl0, c) {
+  // AI가 구조화한 가이드라인 + 원문 직접 파싱 결과를 합친다
+  const parsed = parseGuidelineText($("#guideline")?.value || "");
+  const req = mergeLists(gl0.required_keywords, parsed.required_keywords);
+  const sub = mergeLists(gl0.sub_keywords, parsed.sub_keywords);
+  const tg = mergeLists(gl0.tags, parsed.tags);
+  const gl = { ...gl0, required_keywords: req.list, sub_keywords: sub.list, tags: tg.list };
+  const supplemented = [...req.added, ...sub.added, ...tg.added];
   const b = c.blog;
   const title = b.title;
   const intro = b.intro;
@@ -421,7 +450,7 @@ function runChecks(gl, c) {
   (gl.structure || []).forEach((s, i) =>
     add("추천 본문 구성", `${i + 1}단락: ${s}`, b.sections[i] ? 1 : 0, 1, b.sections[i] ? `생성된 단락: ${b.sections[i].heading} (내용 일치는 담당자 확인)` : "단락 없음")
   );
-  (gl.footer_items || []).forEach((f) => add("하단 정보", f, has(b.footer + all, f) ? 1 : 0, 1));
+  (gl.footer_items || []).forEach((f) => add("하단 정보", f, footerItemPass(f, b.footer) ? 1 : 0, 1, "하단 영역에서 URL·전화번호 대조"));
 
   // 미션 응답이 일부 빠져도 분모가 줄지 않도록 가이드라인의 미션 수를 기준으로 한다
   const missions = [...(c.mission_check || [])];
@@ -442,6 +471,11 @@ function runChecks(gl, c) {
     extras.push({ item: `현장사진 본문 배치 ${used.size} / ${state.photos.length}장`, pass: used.size >= state.photos.length });
   }
   extras.push({ item: "협찬(경제적 이해관계) 표시 문구", pass: Boolean(b.disclosure && b.disclosure.trim()) });
+  extras.push({
+    item: "가이드라인 원문 직접 대조 (AI 목록 누락 보충)",
+    pass: true,
+    detail: supplemented.length ? `AI 목록에 없던 ${supplemented.length}개를 원문에서 보충: ${supplemented.join(", ")}` : "AI가 뽑은 키워드·태그 목록이 원문과 일치",
+  });
   const plain = stripEv(all);
   const superlatives = [...new Set(plain.match(/(국내|업계|세계)\s?(최고|최초|1위|유일)|최고의?|1위|유일한?|완벽(한|하게)?|100\s?%|무조건|반드시\s?(성공|해결)/g) || [])];
   extras.push({ item: "최상급·단정 표현 (코드 스캔)", pass: superlatives.length === 0, detail: superlatives.length ? `발견: ${superlatives.join(", ")} → 자료 근거 확인 필요` : "발견 없음" });
@@ -483,6 +517,6 @@ function renderSummary() {
     <div class="stat"><b>${state.analysis.differentiators.length}</b><span>차별점 카드</span></div>
     <div class="stat"><b>${state.analysis.photos.length}장</b><span>사진 분석·배치</span></div>
     <div class="stat"><b>${ck.warnings.length}건</b><span>확인 필요 경고</span></div>
-    <div class="stat"><b>${t.toFixed(0)}초</b><span>AI 생성 시간</span></div>`;
+    <div class="stat"><b>${t.toFixed(0)}초</b><span>AI 생성 시간${state.retried ? " (빈칸 감지 → 자동 재생성 1회 포함)" : ""}</span></div>`;
   $("#summary").classList.remove("hidden");
 }
