@@ -337,7 +337,11 @@ function renderBlog() {
 async function renderCards() {
   const cards = state.content.cardnews.slice(0, 4);
   try {
-    await document.fonts.load('800 64px "Pretendard"');
+    // 카드에 쓰는 굵기(400·700·800)를 캔버스에서 쓸 수 있게 미리 불러온다. 느린 네트워크에서는 2.5초만 기다린다.
+    await Promise.race([
+      Promise.all(["400", "700", "800"].map((w) => document.fonts.load(`${w} 40px "Pretendard"`, "가A1"))),
+      new Promise((r) => setTimeout(r, 2500)),
+    ]);
   } catch {}
   $("#tab-cards").innerHTML = `
     <div class="toolbar"><button class="btn primary" id="dlAll">4장 모두 PNG 다운로드</button><span class="hint">1080×1080 · 인스타그램 피드 규격</span></div>
@@ -366,7 +370,8 @@ function loadImg(url) {
     img.src = url;
   });
 }
-async function drawCard(canvas, card, i, total) {
+// 이전 디자인(사진 위에 어두운 덮개 + 흰 글씨). 새 디자인(drawCardV2)이 실패할 때만 쓰는 대체용.
+async function drawCardLegacy(canvas, card, i, total) {
   const ctx = canvas.getContext("2d");
   const W = 1080, H = 1080;
   const FONT = '"Pretendard", "Malgun Gothic", sans-serif';
@@ -579,4 +584,368 @@ function renderSummary() {
     <div class="stat"><b>${ck.warnings.length}건</b><span>확인 필요 경고</span></div>
     <div class="stat"><b>${t.toFixed(0)}초</b><span>AI 생성 시간${state.retried ? " (빈칸 감지 → 자동 재생성 1회 포함)" : ""}</span></div>`;
   $("#summary").classList.remove("hidden");
+}
+
+// ---------- 카드뉴스 디자인 v2 ----------
+// 원칙: 사진을 어둡게 덮지 않고 목업 프레임에 선명하게 담는다 / 단색 배경 + 가운데 대형 타이포 /
+//       가는 글씨와 굵은 키워드를 섞고 숫자는 포인트 컬러 / 라벨 칩·따옴표·단계 카드로 리듬을 준다.
+// AI 출력 형식(headline, body, photo_index)은 그대로 쓰고, 강조할 단어는 코드가 고른다.
+const CARD = {
+  font: '"Pretendard", "Malgun Gothic", sans-serif',
+  slate: "#2b3152", slate2: "#353d66", navy: "#0b1f4b", navy2: "#122a6b",
+  blue: "#1f5eff", blue2: "#3d74ff", sky: "#f1f5ff", sky2: "#dfe8ff",
+  orange: "#ff7a1a", yellow: "#ffd43b", ink: "#16203a", quote: "#5a6496",
+};
+const cardFont = (weight, px) => `${weight} ${px}px ${CARD.font}`;
+
+// 강조할 단어: 전화번호, 숫자+단위, 가이드라인 키워드
+function cardEmphasisRe() {
+  const gl = state.analysis?.guideline || {};
+  const escCh = (ch) => ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const kws = [...(gl.required_keywords || []), ...(gl.sub_keywords || []), "AI", "종합리포트", "리포트"]
+    .map((w) => String(w || "").trim())
+    .filter((w) => w.length >= 2)
+    .sort((a, b) => b.length - a.length)
+    .map((w) => [...w].filter((ch) => ch !== " ").map(escCh).join("\\s*"));
+  const phone = "\\d{2,4}-\\d{3,4}(?:-\\d{4})?";
+  const num = "\\d[\\d,.]*\\s?(?:건|개|초|분|배|년|명|장|단계|종|석|시간|회|%)?";
+  return new RegExp(`(${[phone, num, ...kws].join("|")})`, "gi");
+}
+
+// 텍스트를 [일반 0 / 키워드 1 / 숫자 2] 조각으로 나누고 단어 단위로 줄바꿈한다.
+function richLines(ctx, text, maxW, fontFor, re) {
+  const s = String(text || "");
+  const flags = new Array(s.length).fill(0);
+  if (re) {
+    for (const m of s.matchAll(re)) {
+      const kind = /^\d/.test(m[0]) ? 2 : 1;
+      for (let k = m.index; k < m.index + m[0].length; k++) flags[k] = kind;
+    }
+  }
+  const words = [];
+  let i = 0;
+  while (i < s.length) {
+    if (s[i] === " ") { i++; continue; }
+    if (s[i] === "\n") { words.push(null); i++; continue; }
+    const parts = [];
+    while (i < s.length && s[i] !== " " && s[i] !== "\n") {
+      const k = flags[i];
+      let j = i;
+      while (j < s.length && s[j] !== " " && s[j] !== "\n" && flags[j] === k) j++;
+      parts.push({ t: s.slice(i, j), k });
+      i = j;
+    }
+    words.push(parts);
+  }
+  ctx.font = fontFor(0);
+  const space = ctx.measureText(" ").width;
+  const lines = [];
+  let cur = [], curW = 0;
+  const flush = () => { if (cur.length) lines.push({ words: cur, w: curW }); cur = []; curW = 0; };
+  for (const parts of words) {
+    if (!parts) { flush(); continue; }
+    let ww = 0;
+    for (const p of parts) { ctx.font = fontFor(p.k); p.w = ctx.measureText(p.t).width; ww += p.w; }
+    if (cur.length && curW + space + ww > maxW) flush();
+    curW += (cur.length ? space : 0) + ww;
+    cur.push({ parts, w: ww });
+  }
+  flush();
+  return { lines, space };
+}
+// 줄 길이가 고르게 나뉘도록 한 번 더 맞춘다.
+function richBalanced(ctx, text, maxW, fontFor, re) {
+  let lay = richLines(ctx, text, maxW, fontFor, re);
+  const n = lay.lines.length;
+  if (n >= 2) {
+    const total = lay.lines.reduce((sum, l) => sum + l.w, 0);
+    for (const f of [1.1, 1.22, 1.36]) {
+      const t = richLines(ctx, text, Math.min(maxW, (total / n) * f), fontFor, re);
+      if (t.lines.length === n) { lay = t; break; }
+    }
+  }
+  return lay;
+}
+// 가운데 정렬로 그리고 마지막 줄 아래의 y를 돌려준다. (y = 첫 줄 기준선)
+function drawRich(ctx, lay, cx, y, lineH, fontFor, colorFor) {
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  for (const line of lay.lines) {
+    let x = cx - line.w / 2;
+    for (const w of line.words) {
+      for (const p of w.parts) {
+        ctx.font = fontFor(p.k);
+        ctx.fillStyle = colorFor(p.k);
+        ctx.fillText(p.t, x, y);
+        x += p.w;
+      }
+      x += lay.space;
+    }
+    y += lineH;
+  }
+  return y - lineH;
+}
+function pickBigNumber(text) {
+  let best = null;
+  for (const m of String(text).matchAll(/(\d[\d,]*)\s?(건|개|배|명|%|초|분|년|종|석)/g)) {
+    const v = Number(m[1].replace(/,/g, ""));
+    if (!best || v > best.v) best = { v, t: m[1] + m[2] };
+  }
+  return best && best.v >= 10 ? best.t : "";
+}
+function drawBrowserMock(ctx, img, x, y, w, h) {
+  ctx.save();
+  ctx.shadowColor = "rgba(11,31,75,.22)";
+  ctx.shadowBlur = 60;
+  ctx.shadowOffsetY = 24;
+  ctx.fillStyle = "#ffffff";
+  roundRect(ctx, x, y, w, h, 26);
+  ctx.fill();
+  ctx.restore();
+  ctx.save();
+  roundRect(ctx, x, y, w, h, 26);
+  ctx.clip();
+  ctx.fillStyle = "#e9edf6";
+  ctx.fillRect(x, y, w, 56);
+  ["#ff5f57", "#febc2e", "#28c840"].forEach((c, k) => {
+    ctx.fillStyle = c;
+    ctx.beginPath();
+    ctx.arc(x + 34 + k * 30, y + 28, 9, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  ctx.fillStyle = "#ffffff";
+  roundRect(ctx, x + 140, y + 12, w - 190, 32, 16);
+  ctx.fill();
+  const ah = h - 56;
+  const s = Math.max(w / img.width, ah / img.height);
+  ctx.drawImage(img, x + (w - img.width * s) / 2, y + 56, img.width * s, img.height * s);
+  ctx.restore();
+}
+function drawPhoneMock(ctx, img, cx, y, w, h) {
+  const x = cx - w / 2;
+  ctx.save();
+  ctx.shadowColor = "rgba(11,31,75,.28)";
+  ctx.shadowBlur = 60;
+  ctx.shadowOffsetY = 24;
+  ctx.fillStyle = "#141a2e";
+  roundRect(ctx, x, y, w, h, 58);
+  ctx.fill();
+  ctx.restore();
+  ctx.save();
+  roundRect(ctx, x + 14, y + 14, w - 28, h - 28, 46);
+  ctx.clip();
+  const iw = w - 28;
+  const s = Math.max(iw / img.width, (h - 28) / img.height);
+  ctx.drawImage(img, x + 14 + (iw - img.width * s) / 2, y + 14, img.width * s, img.height * s);
+  ctx.restore();
+}
+
+async function drawCard(canvas, card, i, total) {
+  try {
+    await drawCardV2(canvas.getContext("2d"), card, i, total);
+  } catch (e) {
+    console.error("[card] 새 디자인 그리기 실패 → 이전 디자인으로 대체", e);
+    canvas.width = 1080; // 캔버스 상태 초기화
+    await drawCardLegacy(canvas, card, i, total);
+  }
+}
+
+async function drawCardV2(ctx, card, i, total) {
+  const W = 1080, H = 1080, CX = W / 2;
+  const head = String(card.headline || "").trim();
+  const body = String(card.body || "").trim();
+  const re = cardEmphasisRe();
+  const img = card.photo_index > 0 && photoUrl(card.photo_index) ? await loadImg(photoUrl(card.photo_index)) : null;
+  const footerText = (state.analysis?.guideline?.footer_items || []).join(" ") + " " + ($("#product")?.value || "");
+  const site = (footerText.match(/www\.[\w.-]+\.[a-z]{2,}/i) || [""])[0];
+  const phone = (footerText.match(/\d{2,4}-\d{3,4}-\d{4}|\d{4}-\d{4}/) || [""])[0];
+  const brand = String(state.analysis?.product_name || "").split(/[+(（·—]/)[0].trim().slice(0, 14) || "PRODUCT";
+  const mode = i === total - 1 ? "cta" : i > 0 && img ? "screen" : "quote";
+  const circle = (x, y, r) => { ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); };
+  // 글자 크기를 줄여 가며 최대 줄 수 안에 맞춘다.
+  const fit = (text, sizes, maxW, maxLines, weightFor) => {
+    let out = null;
+    for (const px of sizes) {
+      const fontFor = (k) => cardFont(weightFor(k), px);
+      out = { lay: richBalanced(ctx, text, maxW, fontFor, re), px, fontFor };
+      if (out.lay.lines.length <= maxLines) break;
+    }
+    return out;
+  };
+  const chip = (label, y, bg, fg) => {
+    ctx.font = cardFont(700, 32);
+    const w = ctx.measureText(label).width + 68;
+    ctx.fillStyle = bg;
+    roundRect(ctx, CX - w / 2, y, w, 64, 32);
+    ctx.fill();
+    ctx.fillStyle = fg;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, CX, y + 33);
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+  };
+
+  if (mode === "quote") {
+    // ── 문구 중심: 짙은 단색 배경, 큰 따옴표, 가운데 대형 헤드라인, 본문 속 숫자를 초대형 포인트로
+    ctx.fillStyle = i === 0 ? CARD.slate : CARD.navy;
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = i === 0 ? CARD.slate2 : CARD.navy2;
+    circle(CX, H + 380, 660);
+    const big = pickBigNumber(head + " " + body) || (/[?？]\s*$/.test(head) ? "?" : "");
+    const h = fit(head, [96, 88, 80, 72, 64], 860, 3, () => 800);
+    const hLine = Math.round(h.px * 1.25);
+    const b = fit(body, [44, 40, 36], 800, 4, (k) => (k ? 800 : 400));
+    const bLine = Math.round(b.px * 1.52);
+    const blockH = h.lay.lines.length * hLine + 40 + b.lay.lines.length * bLine;
+    const top = 190, bottom = big ? H - 390 : H - 170;
+    let y = top + Math.max(0, (bottom - top - blockH) / 2) + h.px;
+    // 따옴표
+    const headW = Math.max(...h.lay.lines.map((l) => l.w));
+    ctx.font = cardFont(800, 150);
+    ctx.fillStyle = CARD.quote;
+    ctx.textAlign = "left";
+    ctx.fillText("“", Math.max(44, CX - headW / 2 - 96), y - h.px * 0.2 + 30);
+    const lastY = drawRich(ctx, h.lay, CX, y, hLine, h.fontFor, (k) => (k === 2 ? CARD.orange : "#ffffff"));
+    ctx.font = cardFont(800, 150);
+    ctx.fillStyle = CARD.quote;
+    const lastW = h.lay.lines[h.lay.lines.length - 1].w;
+    ctx.fillText("”", Math.min(W - 120, CX + lastW / 2 + 22), lastY + 70);
+    y = lastY + 40 + b.px + 16;
+    drawRich(ctx, b.lay, CX, y, bLine, b.fontFor, (k) => (k === 2 ? CARD.orange : k === 1 ? "#ffffff" : "rgba(255,255,255,.80)"));
+    if (big) {
+      ctx.font = cardFont(800, big.length > 5 ? 200 : 250);
+      ctx.fillStyle = CARD.orange;
+      ctx.textAlign = "center";
+      ctx.fillText(big, CX, H - 118);
+      ctx.textAlign = "left";
+    }
+    if (site) {
+      ctx.font = cardFont(400, 24);
+      ctx.fillStyle = "rgba(255,255,255,.55)";
+      ctx.textAlign = "center";
+      ctx.fillText(site, CX, H - 48);
+      ctx.textAlign = "left";
+    }
+  } else if (mode === "screen") {
+    // ── 화면 중심: 밝은 배경, 라벨 칩, 블루 헤드라인, 사진은 브라우저/휴대폰 목업 안에 선명하게
+    // 카드마다 포인트 색을 하나만 쓴다: 홀수 번째는 블루, 짝수 번째는 오렌지 (평면색, 그라디언트 없음)
+    const warm = i % 2 === 0;
+    const accent = warm ? "#f0541e" : CARD.blue;
+    ctx.fillStyle = warm ? "#fff7f0" : "#f4f6fa";
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = warm ? "#ffe3d1" : "#dce6f7";
+    circle(30, 40, 250);
+    circle(W - 10, H - 260, 210);
+    ctx.fillStyle = accent;
+    ctx.fillRect(0, H - 26, W, 26);
+    chip(i === 1 ? "이렇게 해결합니다" : i === 2 ? "여기서 달라집니다" : `POINT ${i + 1}`, 150, CARD.yellow, CARD.navy);
+    const h = fit(head, [92, 84, 76, 68], 920, 2, () => 800);
+    const hLine = Math.round(h.px * 1.22);
+    let y = 150 + 64 + 46 + h.px;
+    const lastY = drawRich(ctx, h.lay, CX, y, hLine, h.fontFor, () => accent);
+    const b = fit(body, [40, 36, 32], 880, 2, (k) => (k ? 800 : 400));
+    const bLine = Math.round(b.px * 1.5);
+    y = lastY + 34 + b.px;
+    const bodyEnd = drawRich(ctx, b.lay, CX, y, bLine, b.fontFor, (k) => (k === 2 ? accent : k === 1 ? CARD.ink : "#3a4256"));
+    const mockTop = Math.min(Math.max(bodyEnd + 52, 520), 660);
+    const portrait = img.height / img.width > 1.25;
+    if (portrait) drawPhoneMock(ctx, img, CX, mockTop, 400, 900);
+    else drawBrowserMock(ctx, img, 90, mockTop, W - 180, H - mockTop + 60);
+    if (/AI|요약|STT/i.test(head + body)) {
+      const bx = portrait ? CX - 300 : 52, by = mockTop - 44;
+      ctx.save();
+      ctx.shadowColor = "rgba(11,31,75,.25)";
+      ctx.shadowBlur = 30;
+      ctx.shadowOffsetY = 10;
+      ctx.fillStyle = warm ? CARD.blue : CARD.orange;
+      roundRect(ctx, bx, by, 112, 112, 28);
+      ctx.fill();
+      ctx.restore();
+      ctx.font = cardFont(800, 50);
+      ctx.fillStyle = "#ffffff";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("AI", bx + 56, by + 59);
+      ctx.textAlign = "left";
+      ctx.textBaseline = "alphabetic";
+    }
+  } else {
+    // ── 행동 유도: 브랜드 블루 배경, 전화번호는 노란색으로 크게, "→" 단계는 1·2·3 단계 카드로
+    ctx.fillStyle = CARD.blue;
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = CARD.blue2;
+    circle(W - 30, 170, 300);
+    circle(40, H - 330, 210);
+    chip("지금 상담하세요", 150, "#ffffff", CARD.blue);
+    const h = fit(head, [92, 84, 76, 68], 920, 2, () => 800);
+    const hLine = Math.round(h.px * 1.22);
+    let y = 150 + 64 + 50 + h.px;
+    const lastY = drawRich(ctx, h.lay, CX, y, hLine, h.fontFor, (k) => (k === 2 ? CARD.yellow : "#ffffff"));
+    const steps = body.split(/\s*(?:→|➜|▶|>)\s*/).map((t) => t.trim()).filter(Boolean).slice(0, 4);
+    const barTop = H - 150;
+    if (steps.length >= 2) {
+      const sh = 104, gap = 20, sw = 820, sx = CX - sw / 2;
+      const totalH = steps.length * sh + (steps.length - 1) * gap;
+      let sy = lastY + 56 + Math.max(0, (barTop - 40 - (lastY + 56) - totalH) / 2);
+      steps.forEach((t, k) => {
+        ctx.save();
+        ctx.shadowColor = "rgba(11,31,75,.22)";
+        ctx.shadowBlur = 30;
+        ctx.shadowOffsetY = 10;
+        ctx.fillStyle = "#ffffff";
+        roundRect(ctx, sx, sy, sw, sh, 28);
+        ctx.fill();
+        ctx.restore();
+        ctx.fillStyle = CARD.navy;
+        circle(sx + 62, sy + sh / 2, 30);
+        ctx.font = cardFont(800, 34);
+        ctx.fillStyle = "#ffffff";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(String(k + 1), sx + 62, sy + sh / 2 + 2);
+        ctx.textAlign = "left";
+        let px = 40;
+        ctx.font = cardFont(700, px);
+        while (px > 28 && ctx.measureText(t).width > sw - 150) ctx.font = cardFont(700, (px -= 2));
+        ctx.fillStyle = CARD.navy;
+        ctx.fillText(t, sx + 112, sy + sh / 2 + 2);
+        ctx.textBaseline = "alphabetic";
+        sy += sh + gap;
+      });
+    } else if (body) {
+      const b = fit(body, [46, 42, 38], 860, 4, (k) => (k ? 800 : 400));
+      drawRich(ctx, b.lay, CX, lastY + 70 + b.px, Math.round(b.px * 1.5), b.fontFor, (k) => (k === 2 ? CARD.yellow : k === 1 ? "#ffffff" : "rgba(255,255,255,.88)"));
+    }
+    ctx.fillStyle = CARD.navy;
+    ctx.fillRect(0, barTop, W, H - barTop);
+    ctx.textBaseline = "middle";
+    if (phone) {
+      ctx.font = cardFont(700, 34);
+      ctx.fillStyle = "rgba(255,255,255,.85)";
+      ctx.textAlign = "left";
+      ctx.fillText("상담 문의", 70, barTop + 77);
+      const lw = ctx.measureText("상담 문의").width;
+      ctx.font = cardFont(800, 56);
+      ctx.fillStyle = CARD.yellow;
+      ctx.fillText(phone, 70 + lw + 26, barTop + 78);
+    }
+    if (site) {
+      ctx.font = cardFont(400, 30);
+      ctx.fillStyle = "rgba(255,255,255,.85)";
+      ctx.textAlign = "right";
+      ctx.fillText(site, W - 70, barTop + 78);
+    }
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+  }
+
+  // ── 공통: 오른쪽 위에 제품명 워드마크 하나만 (쪽번호는 인스타그램이 따로 보여 주므로 넣지 않는다)
+  const onDark = mode !== "screen";
+  ctx.font = cardFont(800, 32);
+  ctx.fillStyle = onDark ? "#ffffff" : CARD.navy;
+  ctx.textBaseline = "alphabetic";
+  ctx.textAlign = "right";
+  ctx.fillText(brand, W - 60, 96);
+  ctx.textAlign = "left";
 }
