@@ -35,7 +35,9 @@ drop.addEventListener("drop", (e) => (e.preventDefault(), addPhotos(e.dataTransf
 
 async function addPhotos(files) {
   if (document.body.classList.contains("running")) return; // 실행 중에는 사진 번호가 바뀌지 않게 잠금
-  for (const f of [...files].filter((f) => f.type.startsWith("image/"))) {
+  // 파일 선택 창이 돌려주는 순서는 일정하지 않으므로 파일 이름 순(1_, 2_, …)으로 정렬해 사진 번호를 고정한다
+  const sorted = [...files].filter((f) => f.type.startsWith("image/")).sort((a, b) => a.name.localeCompare(b.name, "ko", { numeric: true }));
+  for (const f of sorted) {
     if (state.photos.length >= 5) break;
     state.photos.push(await resizeImage(f, 1280)); // 느린 네트워크 대비: 업로드 용량·이미지 토큰 축소
   }
