@@ -259,9 +259,11 @@ function renderDiff() {
 const hasPrivacy = (note) => {
   const s = String(note || "").trim().replace(/[.\s]/g, "");
   if (!s || /^(없음|해당없음|-|none|n\/a)$/i.test(s)) return false;
-  // "특이 개인정보 없음", "익명 처리됨"처럼 문제가 없다는 메모는 경고로 보지 않는다
-  if (/필요|노출|주의|보임|보입니다|가려야/.test(s)) return true;
-  return !/없음|익명처리|해당없/.test(s);
+  // "흐림 처리 필요"처럼 조치가 필요하다는 메모만 경고로 본다("불필요"는 제외)
+  if (/(?<!불)필요|가려야|주의/.test(s)) return true;
+  // "특이 개인정보 없음", "익명 처리됨", "별도 처리 불필요"처럼 문제가 없다는 메모는 경고가 아니다
+  if (/불필요|없음|익명|해당없/.test(s)) return false;
+  return /노출|보임|보입니다/.test(s);
 };
 function renderPhotos() {
   const ps = state.analysis.photos;
