@@ -93,6 +93,9 @@ async function callClaudeOnce({ system, content, schema, effort, label }) {
   }
 }
 
+const resolveGuideline = (g = "") =>
+  String(g).trim() ? { guideline: g, usedDefault: false } : { guideline: readSample("default_guideline.md"), usedDefault: true };
+
 // 생성 결과에서 비어 있는 필수 필드를 찾는다.
 function findMissing(d, analysis) {
   const m = [];
@@ -106,7 +109,7 @@ function findMissing(d, analysis) {
   if (!b.tags?.length) m.push("tags");
   if ((d?.cardnews || []).filter((c) => c.headline?.trim() && c.body?.trim()).length < 4) m.push("cardnews");
   if (!d?.instagram_caption?.trim()) m.push("instagram_caption");
-  const missionCount = analysis?.guideline?.missions?.length || 1;
+  const missionCount = (analysis?.guideline?.missions || []).length;
   if ((d?.mission_check || []).length < missionCount || (d?.mission_check || []).some((x) => !x.quote?.trim())) m.push("mission_check");
   return m;
 }
@@ -128,9 +131,10 @@ const requireKey = (req, res, next) =>
 // 1) 차별점 분석 + 현장사진 분석 + 가이드라인 구조화
 app.post("/api/analyze", requireKey, async (req, res) => {
   try {
-    const { product = "", guideline = "", images = [], pdf = null } = req.body;
+    const { product = "", images = [], pdf = null } = req.body;
     if (!product.trim() && !pdf) return res.status(400).json({ error: "제품 자료를 입력하거나 PDF를 올려 주세요." });
-    if (!guideline.trim()) return res.status(400).json({ error: "홍보 가이드라인을 입력해 주세요." });
+    // 가이드라인이 없으면 내장 기본 가이드라인으로 대체 → 현장사진과 제품 정보만으로도 생성
+    const { guideline, usedDefault } = resolveGuideline(req.body.guideline);
 
     const content = [];
     if (pdf?.data) {
@@ -152,6 +156,7 @@ app.post("/api/analyze", requireKey, async (req, res) => {
       effort: process.env.ANALYZE_EFFORT || "low",
       label: "analyze",
     });
+    result.meta.defaultGuideline = usedDefault;
     res.json(result);
   } catch (err) {
     errorResponse(res, err);
@@ -161,8 +166,9 @@ app.post("/api/analyze", requireKey, async (req, res) => {
 // 2) 가이드라인 맞춤 블로그 리뷰 + 카드뉴스 + 미션 자체 검수
 app.post("/api/generate", requireKey, async (req, res) => {
   try {
-    const { analysis, product = "", guideline = "" } = req.body;
+    const { analysis, product = "" } = req.body;
     if (!analysis) return res.status(400).json({ error: "먼저 분석을 실행해 주세요." });
+    const { guideline } = resolveGuideline(req.body.guideline);
     const content = [
       {
         type: "text",

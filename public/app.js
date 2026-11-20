@@ -104,6 +104,7 @@ async function run() {
     );
     state.analysis = a.data;
     state.timings.analyze = a.meta.seconds;
+    state.defaultGuideline = Boolean(a.meta.defaultGuideline);
     renderDiff();
     renderPhotos();
     $("#empty").classList.add("hidden");
@@ -153,6 +154,7 @@ async function saveLastRun() {
         savedAt: new Date().toISOString(),
         timings: state.timings,
         retried: state.retried,
+        defaultGuideline: state.defaultGuideline,
         analysis: state.analysis,
         content: state.content,
         photos: state.photos.map(({ name, url }) => ({ name, url })),
@@ -170,7 +172,7 @@ $("#replay").addEventListener("click", async () => {
   const r = await fetch("/api/last-run");
   if (!r.ok) return;
   const s = await r.json();
-  Object.assign(state, { analysis: s.analysis, content: s.content, timings: s.timings || {}, retried: s.retried, photos: s.photos || [] });
+  Object.assign(state, { analysis: s.analysis, content: s.content, timings: s.timings || {}, retried: s.retried, defaultGuideline: s.defaultGuideline, photos: s.photos || [] });
   renderThumbs();
   state.check = runChecks(state.analysis.guideline, state.content);
   await renderResults();
@@ -381,7 +383,8 @@ async function drawCard(canvas, card, i, total) {
   // 상단 브랜드 · 페이지 (알약 폭은 텍스트 폭 + 좌우 패딩 24px)
   // 브랜드·연락처는 분석 결과(제품명)와 가이드라인 하단 정보에서 가져온다 → 다른 제품에도 그대로 적용
   const BRAND = (state.analysis?.product_name || "PRODUCT").slice(0, 18);
-  const footerText = (state.analysis?.guideline?.footer_items || []).join(" ");
+  // 가이드라인 하단 정보 → 없으면 제품 자료에서 연락처를 찾는다
+  const footerText = (state.analysis?.guideline?.footer_items || []).join(" ") + " " + ($("#product")?.value || "");
   const site = (footerText.match(/www\.[\w.-]+\.[a-z]{2,}/i) || [""])[0];
   const phone = (footerText.match(/\d{2,4}-\d{3,4}-\d{4}|\d{4}-\d{4}/) || [""])[0];
   ctx.font = `700 30px ${FONT}`;
@@ -542,6 +545,7 @@ function renderCheck() {
       ? `<div class="chips">${d.hit.map((k) => `<span class="chip">${esc(k)}</span>`).join("")}${d.miss.map((k) => `<span class="chip miss">${esc(k)}</span>`).join("")}</div>`
       : esc(d);
   $("#tab-check").innerHTML = `
+    ${state.defaultGuideline ? `<p class="replay-banner">가이드라인을 입력하지 않아 내장 기본 가이드라인(5단 구성·기본 미션 5개·제품 자료 연락처)으로 생성·검수했습니다.</p>` : ""}
     <p class="hint">가이드라인 조건 ${ck.total}개 = 코드 검사 ${ck.ruleCount}개(키워드·태그·구성·하단 정보, AI가 가이드라인에서 뽑은 목록을 코드가 하나씩 대조) + 미션 ${ck.missions.length}개(AI가 본문 인용과 함께 판정). 최종 승인은 담당자가 합니다.</p>
     <h3 class="sub">규칙 검수 (코드) · ${ck.ruleScore} / ${ck.ruleCount} 조건 충족</h3>
     <table class="check-table rules"><tr><th class="c-group">구분</th><th class="c-item">항목</th><th class="c-result">결과</th><th>상세</th></tr>
@@ -562,7 +566,7 @@ function renderSummary() {
   const ck = state.check;
   const t = (state.timings.analyze || 0) + (state.timings.generate || 0);
   $("#summary").innerHTML = `
-    <div class="stat big"><b>${ck.score}%</b><span>가이드라인 ${ck.total}개 조건 중 ${ck.passed}개 충족</span><small>코드 검사 ${ck.ruleScore}/${ck.ruleCount} · AI 미션 ${ck.missionScore}/${ck.missions.length}</small></div>
+    <div class="stat big"><b>${ck.score}%</b><span>${state.defaultGuideline ? "기본 가이드라인" : "가이드라인"} ${ck.total}개 조건 중 ${ck.passed}개 충족</span><small>코드 검사 ${ck.ruleScore}/${ck.ruleCount} · AI 미션 ${ck.missionScore}/${ck.missions.length}</small></div>
     <div class="stat"><b>${state.analysis.differentiators.length}</b><span>차별점 카드</span></div>
     <div class="stat"><b>${state.analysis.photos.length}장</b><span>사진 분석·배치</span></div>
     <div class="stat"><b>${ck.warnings.length}건</b><span>확인 필요 경고</span></div>

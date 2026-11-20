@@ -26,9 +26,12 @@ const images = photoDir
       .map((f) => ({ media_type: /\.png$/i.test(f) ? "image/png" : "image/jpeg", data: readFileSync(path.join(photoDir, f)).toString("base64") }))
   : [];
 
+// NO_GUIDELINE=1 이면 가이드라인 없이(현장사진 + 제품 정보만으로) 실행
+const guideline = process.env.NO_GUIDELINE ? "" : samples.guideline;
 const t0 = Date.now();
-const a = await post("/api/analyze", { product: samples.product, guideline: samples.guideline, images });
-const g = await post("/api/generate", { analysis: a.data, product: samples.product, guideline: samples.guideline });
+const a = await post("/api/analyze", { product: samples.product, guideline, images });
+const g = await post("/api/generate", { analysis: a.data, product: samples.product, guideline });
+console.log("defaultGuideline:", Boolean(a.meta.defaultGuideline), "/ missions:", a.data.guideline.missions.length, "/ structure:", a.data.guideline.structure.length, "/ footer:", JSON.stringify(a.data.guideline.footer_items));
 const total = ((Date.now() - t0) / 1000).toFixed(1);
 
 const gl = a.data.guideline;
