@@ -166,13 +166,17 @@ app.post("/api/analyze", requireKey, async (req, res) => {
 // 2) 가이드라인 맞춤 블로그 리뷰 + 카드뉴스 + 미션 자체 검수
 app.post("/api/generate", requireKey, async (req, res) => {
   try {
-    const { analysis, product = "" } = req.body;
+    const { analysis, product = "", fixMissions = [] } = req.body;
     if (!analysis) return res.status(400).json({ error: "먼저 분석을 실행해 주세요." });
     const { guideline } = resolveGuideline(req.body.guideline);
+    // 미충족 미션 보완 재생성: 검수에서 미충족이었던 미션만 짚어 다시 쓰게 한다
+    const fixNote = Array.isArray(fixMissions) && fixMissions.length
+      ? `\n\n[보완 요청] 이전 생성 결과의 검수에서 아래 미션이 미충족이었다. 이번에는 이 미션들을 충족하도록 관련 단락을 보완해 전체를 다시 작성하라. 자료·사진에 근거가 없어 충족할 수 없는 미션은 지어내지 말고 mission_check에 이유를 밝혀라.\n${fixMissions.map((m) => `- ${m}`).join("\n")}`
+      : "";
     const content = [
       {
         type: "text",
-        text: `[분석 결과]\n${JSON.stringify(analysis, null, 1)}\n\n[제품 자료]\n${product}\n\n[홍보 가이드라인]\n${guideline}\n\n위 내용으로 블로그 리뷰, 카드뉴스 4장, 인스타그램 캡션, 미션 검수, 경고를 작성해 줘.`,
+        text: `[분석 결과]\n${JSON.stringify(analysis, null, 1)}\n\n[제품 자료]\n${product}\n\n[홍보 가이드라인]\n${guideline}\n\n위 내용으로 블로그 리뷰, 카드뉴스 4장, 인스타그램 캡션, 미션 검수, 경고를 작성해 줘.${fixNote}`,
       },
     ];
     const run = (effort, label) =>

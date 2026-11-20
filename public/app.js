@@ -256,7 +256,10 @@ function renderDiff() {
 // "없음", "해당 없음", "-" 같은 값은 개인정보 주의 사항이 없는 것으로 본다
 const hasPrivacy = (note) => {
   const s = String(note || "").trim().replace(/[.\s]/g, "");
-  return !!s && !/^(없음|해당없음|-|none|n\/a)$/i.test(s);
+  if (!s || /^(없음|해당없음|-|none|n\/a)$/i.test(s)) return false;
+  // "특이 개인정보 없음", "익명 처리됨"처럼 문제가 없다는 메모는 경고로 보지 않는다
+  if (/필요|노출|주의|보임|보입니다|가려야/.test(s)) return true;
+  return !/없음|익명처리|해당없/.test(s);
 };
 function renderPhotos() {
   const ps = state.analysis.photos;
